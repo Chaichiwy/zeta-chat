@@ -69,6 +69,18 @@
             display: block;
         }
 
+        /* رسائل النجاح */
+        .success-message {
+            color: #16a34a;
+            font-size: 13px;
+            margin-top: 5px;
+            display: none;
+        }
+
+        .success-message.show {
+            display: block;
+        }
+
         /* واجهة تسجيل الدخول */
         .login-container {
             display: flex;
@@ -98,6 +110,11 @@
             background: linear-gradient(to right, #3b82f6, #60a5fa);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
+        }
+
+        .login-card p {
+            color: #94a3b8;
+            font-size: 13px;
         }
 
         /* واجهة المحادثة */
@@ -173,7 +190,7 @@
             word-wrap: break-word;
         }
 
-        /* لتمييز رسائلك أنت عن الآخرين مستقبلاً */
+        /* لتمييز رسائلك أنت عن الآخرين */
         .message-wrapper.own-message {
             align-self: flex-end;
             flex-direction: row-reverse;
@@ -241,6 +258,17 @@
             background: #dc2626;
         }
 
+        .loading {
+            display: none;
+            color: #60a5fa;
+            font-size: 13px;
+            margin-top: 10px;
+        }
+
+        .loading.show {
+            display: block;
+        }
+
         /* 📱 شاشات الهواتف الذكية (Responsive Design) */
         @media (max-width: 768px) {
             .chat-app {
@@ -275,7 +303,8 @@
     <div id="loginPage" class="login-container">
         <div class="login-card">
             <h1>ZETA Chat</h1>
-            <p style="color: #94a3b8; font-size: 15px;">Real Time Chat Application</p>
+            <p>Real Time Chat Application</p>
+            <p style="font-size: 11px; color: #64748b; margin-top: -10px;">Powered by Firebase</p>
             
             <div>
                 <input type="email" id="email" placeholder="Email Address">
@@ -289,6 +318,8 @@
 
             <button id="loginBtn">Login</button>
             <button id="registerBtn" style="background: #334155;">Create Account</button>
+            
+            <div id="authLoading" class="loading">Authenticating...</div>
         </div>
     </div>
 
@@ -310,7 +341,28 @@
         </main>
     </div>
 
-    <script>
+    <!-- Firebase SDK v9+ -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-app.js";
+        import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-auth.js";
+        import { getFirestore, collection, addDoc, query, orderBy, onSnapshot, limit, getDocs } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-firestore.js";
+
+        // Firebase Configuration
+        const firebaseConfig = {
+            apiKey: "AIzaSyDteU16Z4m8GdCaXe33zwd4NOxsD24QzlQ",
+            authDomain: "zeta-chat-25bf7.firebaseapp.com",
+            projectId: "zeta-chat-25bf7",
+            storageBucket: "zeta-chat-25bf7.firebasestorage.app",
+            messagingSenderId: "543897650460",
+            appId: "1:543897650460:web:b10703aed077313557a6d9",
+            measurementId: "G-Z0GMVB0FDT"
+        };
+
+        // Initialize Firebase
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+
         document.addEventListener("DOMContentLoaded", () => {
             const loginPage = document.getElementById("loginPage");
             const loginBtn = document.getElementById("loginBtn");
@@ -319,6 +371,7 @@
             const passwordInput = document.getElementById("password");
             const emailError = document.getElementById("emailError");
             const passwordError = document.getElementById("passwordError");
+            const authLoading = document.getElementById("authLoading");
 
             const chatPage = document.getElementById("chatPage");
             const messageInput = document.getElementById("messageInput");
@@ -326,6 +379,9 @@
             const messagesContainer = document.getElementById("messages");
             const logoutBtn = document.getElementById("logoutBtn");
             const welcomeUser = document.getElementById("welcomeUser");
+
+            let currentUser = null;
+            let unsubscribeMessages = null;
 
             // دالة التحقق من صحة البريد الإلكتروني
             const validateEmail = (email) => {
@@ -338,18 +394,11 @@
                 return password.length >= 6;
             };
 
-            // دالة لتنظيف وحماية النصوص من XSS
-            const sanitizeInput = (text) => {
-                const div = document.createElement('div');
-                div.textContent = text;
-                return div.innerHTML;
-            };
-
-            // دالة لتوليد لون خلفية عشوائي وثابت لكل مستخدم بناءً على اسمه لـ Avatar
-            const getAvatarColor = (username) => {
+            // دالة لتوليد لون خلفية عشوائي وثابت لكل مستخدم
+            const getAvatarColor = (email) => {
                 let hash = 0;
-                for (let i = 0; i < username.length; i++) {
-                    hash = username.charCodeAt(i) + ((hash << 5) - hash);
+                for (let i = 0; i < email.length; i++) {
+                    hash = email.charCodeAt(i) + ((hash << 5) - hash);
                 }
                 const colors = ['#2563eb', '#16a34a', '#db2777', '#d97706', '#9333ea', '#ea580c', '#0d9488'];
                 return colors[Math.abs(hash) % colors.length];
@@ -362,28 +411,33 @@
                 passwordError.classList.remove("show");
             };
 
-            const checkAuthStatus = () => {
-                const savedUser = localStorage.getItem("zeta_username");
-                if (savedUser) {
+            const showLoading = (show) => {
+                authLoading.classList.toggle("show", show);
+            };
+
+            const checkAuthStatus = (user) => {
+                if (user) {
+                    currentUser = user;
                     loginPage.style.display = "none";
                     chatPage.style.display = "flex";
-                    const userSpan = document.createElement("span");
-                    userSpan.textContent = `👤 ${savedUser}`;
-                    welcomeUser.textContent = "";
-                    welcomeUser.appendChild(userSpan);
+                    welcomeUser.textContent = `👤 ${user.email.split("@")[0]}`;
+                    loadMessages();
+                    listenToMessages();
                 } else {
+                    currentUser = null;
                     loginPage.style.display = "flex";
                     chatPage.style.display = "none";
+                    if (unsubscribeMessages) unsubscribeMessages();
                 }
             };
 
-            const handleAuth = () => {
+            // تسجيل حساب جديد
+            const handleRegister = async () => {
                 clearErrors();
                 
                 const emailValue = emailInput.value.trim();
                 const passwordValue = passwordInput.value;
 
-                // التحقق من البريد الإلكتروني
                 if (emailValue === "") {
                     emailError.textContent = "Please enter your email!";
                     emailError.classList.add("show");
@@ -396,7 +450,6 @@
                     return;
                 }
 
-                // التحقق من كلمة المرور
                 if (passwordValue === "") {
                     passwordError.textContent = "Please enter your password!";
                     passwordError.classList.add("show");
@@ -409,33 +462,114 @@
                     return;
                 }
 
-                const username = emailValue.split("@")[0];
-                localStorage.setItem("zeta_username", username);
-                emailInput.value = "";
-                passwordInput.value = "";
-                checkAuthStatus();
+                showLoading(true);
+                try {
+                    await createUserWithEmailAndPassword(auth, emailValue, passwordValue);
+                    emailInput.value = "";
+                    passwordInput.value = "";
+                    clearErrors();
+                } catch (error) {
+                    if (error.code === "auth/email-already-in-use") {
+                        emailError.textContent = "Email already in use!";
+                        emailError.classList.add("show");
+                    } else {
+                        emailError.textContent = error.message;
+                        emailError.classList.add("show");
+                    }
+                } finally {
+                    showLoading(false);
+                }
             };
 
-            // دالة إرسال الرسائل مع توليد الـ Avatar والـ Time
-            const sendMessage = () => {
-                const text = messageInput.value.trim();
+            // تسجيل الدخول
+            const handleLogin = async () => {
+                clearErrors();
                 
-                // التحقق من أن الرسالة ليست فارغة وليست مجرد مسافات
-                if (text === "" || !text.replace(/\s/g, '').length) return;
+                const emailValue = emailInput.value.trim();
+                const passwordValue = passwordInput.value;
 
-                const username = localStorage.getItem("zeta_username") || "User";
+                if (emailValue === "") {
+                    emailError.textContent = "Please enter your email!";
+                    emailError.classList.add("show");
+                    return;
+                }
+
+                if (passwordValue === "") {
+                    passwordError.textContent = "Please enter your password!";
+                    passwordError.classList.add("show");
+                    return;
+                }
+
+                showLoading(true);
+                try {
+                    await signInWithEmailAndPassword(auth, emailValue, passwordValue);
+                    emailInput.value = "";
+                    passwordInput.value = "";
+                } catch (error) {
+                    if (error.code === "auth/user-not-found" || error.code === "auth/wrong-password") {
+                        emailError.textContent = "Email or password is incorrect!";
+                        emailError.classList.add("show");
+                    } else {
+                        emailError.textContent = error.message;
+                        emailError.classList.add("show");
+                    }
+                } finally {
+                    showLoading(false);
+                }
+            };
+
+            // تحميل الرسائل السابقة
+            const loadMessages = async () => {
+                try {
+                    messagesContainer.innerHTML = "";
+                    const messagesRef = collection(db, "messages");
+                    const q = query(messagesRef, orderBy("timestamp", "asc"), limit(50));
+                    const snapshot = await getDocs(q);
+
+                    snapshot.forEach(doc => {
+                        const data = doc.data();
+                        displayMessage(data.email, data.text, data.timestamp.toDate(), data.email === currentUser.email);
+                    });
+
+                    setTimeout(() => {
+                        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                    }, 100);
+                } catch (error) {
+                    console.error("Error loading messages:", error);
+                }
+            };
+
+            // الاستماع إلى الرسائل الجديدة
+            const listenToMessages = () => {
+                const messagesRef = collection(db, "messages");
+                const q = query(messagesRef, orderBy("timestamp", "asc"));
                 
-                // جلب الوقت الحالي بتنسيق (ساعة:دقيقة)
-                const now = new Date();
-                const timeString = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                unsubscribeMessages = onSnapshot(q, (snapshot) => {
+                    snapshot.docChanges().forEach(change => {
+                        if (change.type === "added") {
+                            const data = change.doc.data();
+                            const isOwnMessage = data.email === currentUser.email;
+                            
+                            // تجنب العرض المكرر
+                            if (!document.querySelector(`[data-msg-id="${change.doc.id}"]`)) {
+                                displayMessage(data.email, data.text, data.timestamp.toDate(), isOwnMessage, change.doc.id);
+                            }
+                        }
+                    });
+                });
+            };
 
-                // الحرف الأول للـ Avatar
+            // عرض الرسالة
+            const displayMessage = (email, text, timestamp, isOwnMessage, docId = null) => {
+                const username = email.split("@")[0];
+                const timeString = timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
                 const firstLetter = username.charAt(0).toUpperCase();
-                const avatarBg = getAvatarColor(username);
+                const avatarBg = getAvatarColor(email);
 
-                // بناء هيكل الرسالة الجديد والمطور بشكل آمن
                 const msgWrapper = document.createElement("div");
-                msgWrapper.classList.add("message-wrapper", "own-message");
+                msgWrapper.classList.add("message-wrapper");
+                if (isOwnMessage) msgWrapper.classList.add("own-message");
+                if (docId) msgWrapper.setAttribute("data-msg-id", docId);
 
                 const avatar = document.createElement("div");
                 avatar.className = "avatar";
@@ -470,22 +604,46 @@
                 msgWrapper.appendChild(messageContent);
 
                 messagesContainer.appendChild(msgWrapper);
-                messageInput.value = "";
-                messageInput.focus();
-
                 messagesContainer.scrollTop = messagesContainer.scrollHeight;
             };
 
-            if (loginBtn) loginBtn.addEventListener("click", handleAuth);
-            if (registerBtn) registerBtn.addEventListener("click", handleAuth);
+            // إرسال الرسالة
+            const sendMessage = async () => {
+                const text = messageInput.value.trim();
+                
+                if (text === "" || !text.replace(/\s/g, '').length) return;
 
-            // السماح بالضغط على Enter للتسجيل
+                try {
+                    const messagesRef = collection(db, "messages");
+                    await addDoc(messagesRef, {
+                        email: currentUser.email,
+                        text: text,
+                        timestamp: new Date()
+                    });
+
+                    messageInput.value = "";
+                    messageInput.focus();
+                } catch (error) {
+                    console.error("Error sending message:", error);
+                    alert("Failed to send message!");
+                }
+            };
+
+            // مراقبة حالة المستخدم
+            onAuthStateChanged(auth, user => {
+                checkAuthStatus(user);
+            });
+
+            // Event Listeners
+            loginBtn.addEventListener("click", handleLogin);
+            registerBtn.addEventListener("click", handleRegister);
+
             emailInput.addEventListener("keypress", (e) => {
-                if (e.key === "Enter") handleAuth();
+                if (e.key === "Enter") handleLogin();
             });
 
             passwordInput.addEventListener("keypress", (e) => {
-                if (e.key === "Enter") handleAuth();
+                if (e.key === "Enter") handleLogin();
             });
 
             sendBtn.addEventListener("click", sendMessage);
@@ -493,13 +651,10 @@
                 if (e.key === "Enter") sendMessage();
             });
 
-            logoutBtn.addEventListener("click", () => {
-                localStorage.removeItem("zeta_username");
-                checkAuthStatus();
+            logoutBtn.addEventListener("click", async () => {
+                await signOut(auth);
                 messagesContainer.innerHTML = "";
             });
-
-            checkAuthStatus();
         });
     </script>
 </body>
